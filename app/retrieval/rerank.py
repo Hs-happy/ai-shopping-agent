@@ -4,7 +4,7 @@
 - FeatureReranker：把词面匹配、语义相似、约束满足、商品质量做成可解释的线性特征，
   零依赖、毫秒级，默认用它；
 - CrossEncoderReranker：fastembed 加载 bge-reranker-base 做 query-passage 交互打分，
-  效果更好但需要下载模型，RERANK_MODE=cross_encoder 时启用。
+  效果更好但要下载约 1GB 模型，`RERANK_MODE=cross_encoder` 时启用。
 
 注意：特征重排用的是"绝对分"而不是"批内归一化分"。
 批内归一化会让每次查询的 top1 都拿到 1.0，重排分失去区分度，
@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.retrieval.types import Candidate
@@ -42,7 +43,6 @@ _ATTR_SYNONYMS: dict[str, tuple[str, ...]] = {
     "户外": ("户外", "防水", "防尘"),
     "视频": ("视频", "4K", "8K", "Vlog"),
     "便携": ("便携", "小巧", "重量"),
-    "办公": ("办公", "商务", "接口"),
 }
 
 CONSTRAINT_WEIGHTS = {"category": 0.45, "brand": 0.20, "price": 0.20, "attributes": 0.15}
@@ -56,7 +56,7 @@ def _price_fit(price: float, low: float | None, high: float | None) -> float:
     return 1.0
 
 
-def _attribute_hits(doc: dict[str, Any], attrs: list[str]) -> tuple[int, int]:
+def attribute_hits(doc: dict[str, Any], attrs: list[str]) -> tuple[int, int]:
     """需求点命中：优先看人工/规则打的标签，标签没有再退回标题文本。
 
     只看规格字段名会误判——"降噪深度: 无主动降噪"里也含"降噪"，
@@ -75,6 +75,62 @@ def _attribute_hits(doc: dict[str, Any], attrs: list[str]) -> tuple[int, int]:
         if any(key.lower() in title for key in keys):
             hit += 1
     return hit, len(attrs)
+
+
+@dataclass
+class Fit:
+    has_constraint: bool
+    category: float = 0.5
+    brand: float = 0.5
+    price: float = 1.0
+    attr_hit: int = 0
+    attr_total: int = 0
+    constraint: float = 0.5
+    reasons: list[str] | None = None
+
+
+def compute_fit(doc: dict[str, Any], slots: dict[str, Any]) -> Fit:
+    brand = (slots.get("brand") or "").strip()
+    category = (slots.get("category") or "").strip()
+    low, high = slots.get("price_min"), slots.get("price_max")
+    attrs = list(slots.get("attributes") or [])
+    has_constraint = bool(brand or category or low or high or attrs)
+
+    price_fit = _price_fit(float(doc["price"]), low, high)
+    category_fit = 1.0 if (not category or doc["category"] == category) else 0.0
+    brand_fit = 1.0 if (not brand or doc["brand"] == brand) else 0.0
+    attr_hit, attr_total = attribute_hits(doc, attrs)
+    attr_fit = (attr_hit / attr_total) if attr_total else 0.5
+
+    parts: list[tuple[float, float]] = []
+    if category:
+        parts.append((CONSTRAINT_WEIGHTS["category"], category_fit))
+    if brand:
+        parts.append((CONSTRAINT_WEIGHTS["brand"], brand_fit))
+    if low or high:
+        parts.append((CONSTRAINT_WEIGHTS["price"], price_fit))
+    if attrs:
+        parts.append((CONSTRAINT_WEIGHTS["attributes"], attr_fit))
+    constraint = sum(w * v for w, v in parts) / sum(w for w, _ in parts) if parts else 0.5
+
+    reasons: list[str] = []
+    if category and category_fit:
+        reasons.append(f"品类匹配 {category}")
+    if brand and brand_fit:
+        reasons.append(f"品牌匹配 {brand}")
+    if (low or high) and price_fit > 0.99:
+        reasons.append(f"¥{int(doc['price'])} 在预算内")
+    if attr_total and attr_hit:
+        reasons.append(f"满足 {attr_hit}/{attr_total} 个需求点")
+    if float(doc["rating"]) >= 4.6:
+        reasons.append("高评分")
+    if int(doc.get("stock") or 0) > 0:
+        reasons.append("有货")
+
+    return Fit(
+        has_constraint=has_constraint, category=category_fit, brand=brand_fit, price=price_fit,
+        attr_hit=attr_hit, attr_total=attr_total, constraint=constraint, reasons=reasons,
+    )
 
 
 class Reranker(Protocol):
@@ -102,32 +158,11 @@ class FeatureReranker:
     def rerank(self, query: str, candidates: list[Candidate], slots: dict[str, Any], top_k: int) -> list[Candidate]:
         if not candidates:
             return []
-        brand = (slots.get("brand") or "").strip()
-        category = (slots.get("category") or "").strip()
-        low, high = slots.get("price_min"), slots.get("price_max")
-        attrs = list(slots.get("attributes") or [])
         negatives = set(slots.get("exclude_brands") or [])
-        has_constraint = bool(brand or category or low or high or attrs)
 
         for cand in candidates:
             doc = cand.doc
-            price_fit = _price_fit(float(doc["price"]), low, high)
-            category_fit = 1.0 if (not category or doc["category"] == category) else 0.0
-            brand_fit = 1.0 if (not brand or doc["brand"] == brand) else 0.0
-            attr_hit, attr_total = _attribute_hits(doc, attrs)
-            attr_fit = (attr_hit / attr_total) if attr_total else 0.5
-
-            parts: list[tuple[float, float]] = []
-            if category:
-                parts.append((CONSTRAINT_WEIGHTS["category"], category_fit))
-            if brand:
-                parts.append((CONSTRAINT_WEIGHTS["brand"], brand_fit))
-            if low or high:
-                parts.append((CONSTRAINT_WEIGHTS["price"], price_fit))
-            if attrs:
-                parts.append((CONSTRAINT_WEIGHTS["attributes"], attr_fit))
-            constraint = sum(w * v for w, v in parts) / sum(w for w, _ in parts) if parts else 0.5
-
+            fit = compute_fit(doc, slots)
             quality = 0.6 * (float(doc["rating"]) / 5.0) + 0.4 * min(
                 1.0, math.log1p(doc["sales"]) / math.log1p(99_999)
             )
@@ -136,62 +171,58 @@ class FeatureReranker:
             score = (
                 self.weights["lexical"] * lexical
                 + self.weights["semantic"] * semantic
-                + (self.weights["constraint"] if has_constraint else 0.0) * constraint
+                + (self.weights["constraint"] if fit.has_constraint else 0.0) * fit.constraint
                 + self.weights["quality"] * quality
             )
-            if not has_constraint:
+            if not fit.has_constraint:
                 score += 0.16  # 无约束时给个中性基线，避免"什么都没匹配"也拿高分
             if doc["brand"] in negatives:
                 score -= 0.5
             if int(doc.get("stock") or 0) <= 0:
                 score -= 0.05
 
-            reasons: list[str] = []
-            if category and category_fit:
-                reasons.append(f"品类匹配 {category}")
-            if brand and brand_fit:
-                reasons.append(f"品牌匹配 {brand}")
-            if (low or high) and price_fit > 0.99:
-                reasons.append(f"¥{int(doc['price'])} 在预算内")
-            if attr_total and attr_hit:
-                reasons.append(f"满足 {attr_hit}/{attr_total} 个需求点")
-            if float(doc["rating"]) >= 4.6:
-                reasons.append("高评分")
-            if int(doc.get("stock") or 0) > 0:
-                reasons.append("有货")
-
             cand.features = {
                 "lexical": round(lexical, 4),
                 "semantic": round(semantic, 4),
-                "constraint": round(constraint, 4),
+                "constraint": round(fit.constraint, 4),
                 "quality": round(quality, 4),
             }
             cand.rerank_score = round(score, 6)
-            cand.reasons = reasons[:4]
+            cand.reasons = (fit.reasons or [])[:4]
 
         candidates.sort(key=lambda c: -c.rerank_score)
         return candidates[:top_k]
 
 
 class CrossEncoderReranker:
+    """bge-reranker-base：query 与候选标题/标签逐对打分，取 0.75 交互分 + 0.25 约束分。"""
+
     name = "bge-reranker"
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-base"):
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
         self._model = TextCrossEncoder(model_name=model_name)
-        self._fallback = FeatureReranker()
+
+    @staticmethod
+    def _passage(doc: dict[str, Any]) -> str:
+        """给 CrossEncoder 的文本要带上价格和核心参数，否则它分不清"5000 以内"和"6000 起"。"""
+        specs = " ".join(f"{k}{v}" for k, v in list(doc["specs"].items())[:4])
+        return f"{doc['title']} 价格{int(doc['price'])}元 {specs} 标签{' '.join(doc.get('tags') or [])}"
 
     def rerank(self, query: str, candidates: list[Candidate], slots: dict[str, Any], top_k: int) -> list[Candidate]:
         if not candidates:
             return []
-        docs = [f"{c.doc['title']} {' '.join(c.doc.get('tags') or [])}" for c in candidates]
-        scores = list(self._model.rerank(query, docs))
-        lo, hi = min(scores), max(scores)
-        span = (hi - lo) or 1.0
+        docs = [self._passage(c.doc) for c in candidates]
+        scores = [float(s) for s in self._model.rerank(query, docs)]
         for cand, score in zip(candidates, scores):
-            cand.rerank_score = 0.75 * ((score - lo) / span) + 0.25 * cand.features.get("constraint", 0.5)
-            cand.reasons = cand.reasons[:2]
+            fit = compute_fit(cand.doc, slots)
+            # 用 sigmoid 把 CE 的 logit 压到 0~1 的绝对分：
+            # 若改用批内 min-max，每次查询的 top1 都是 1.0，置信度就永远高、改写逻辑失效
+            absolute = 1.0 / (1.0 + math.exp(-score / 2.0))
+            cand.rerank_score = 0.7 * absolute + 0.3 * fit.constraint
+            cand.features = {"cross_encoder": round(score, 4), "absolute": round(absolute, 4), "constraint": round(fit.constraint, 4)}
+            cand.reasons = (fit.reasons or [])[:2]
         candidates.sort(key=lambda c: -c.rerank_score)
         return candidates[:top_k]
 

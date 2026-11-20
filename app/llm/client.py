@@ -40,18 +40,21 @@ def extract_json(text: str) -> dict[str, Any] | None:
 
 
 class LLMClient:
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, http_client: Any | None = None):
         self.settings = settings or get_settings()
         self._client = None
         if self.settings.llm_enabled:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(
-                base_url=self.settings.llm_base_url,
-                api_key=self.settings.llm_api_key,
-                timeout=self.settings.llm_timeout_s,
-                max_retries=1,
-            )
+            kwargs: dict[str, Any] = {
+                "base_url": self.settings.llm_base_url,
+                "api_key": self.settings.llm_api_key,
+                "timeout": self.settings.llm_timeout_s,
+                "max_retries": 1,
+            }
+            if http_client is not None:
+                kwargs["http_client"] = http_client  # 测试用：注入 MockTransport
+            self._client = AsyncOpenAI(**kwargs)
 
     @property
     def enabled(self) -> bool:

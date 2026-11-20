@@ -1,0 +1,54 @@
+[
+  {
+    "config": "feature",
+    "k": 10,
+    "queries": 16,
+    "hit@k": 1.0,
+    "recall@k": 0.8562,
+    "precision@k": 0.8562,
+    "mrr@k": 0.9375,
+    "ndcg@k": 0.8769,
+    "constraint_rate": 0.8562,
+    "attr_rate": 1.0,
+    "latency_ms": 10.62,
+    "by_kind": {
+      "keyword": {
+        "queries": 16,
+        "hit@k": 1.0,
+        "recall@k": 0.8562,
+        "precision@k": 0.8562,
+        "mrr@k": 0.9375,
+        "ndcg@k": 0.8769,
+        "constraint_rate": 0.8562,
+        "attr_rate": 1.0,
+        "latency_ms": 10.62
+      }
+    }
+  },
+  {
+    "config": "bge-reranker",
+    "k": 10,
+    "queries": 16,
+    "hit@k": 1.0,
+    "recall@k": 0.9375,
+    "precision@k": 0.9375,
+    "mrr@k": 1.0,
+    "ndcg@k": 0.9546,
+    "constraint_rate": 0.9375,
+    "attr_rate": 1.0,
+    "latency_ms": 1373.26,
+    "by_kind": {
+      "keyword": {
+        "queries": 16,
+        "hit@k": 1.0,
+        "recall@k": 0.9375,
+        "precision@k": 0.9375,
+        "mrr@k": 1.0,
+        "ndcg@k": 0.9546,
+        "constraint_rate": 0.9375,
+        "attr_rate": 1.0,
+        "latency_ms": 1373.26
+      }
+    }
+  }
+]
