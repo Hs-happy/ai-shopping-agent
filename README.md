@@ -1,5 +1,12 @@
 # 小导 · 全渠道智能导购 Agent
 
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+![Tests](https://img.shields.io/badge/tests-28%20passed-success)
+
+> CI 模板在 [`docs/ci-workflow.yml`](docs/ci-workflow.yml)，复制到 `.github/workflows/ci.yml` 即可启用（造数 → 建索引 → 评测 → 28 项测试 → 构建镜像）。
+
+> An e-commerce shopping-guide agent: LangGraph state machine + hybrid retrieval (BM25 + BGE) + MCP tools + SSE streaming, built with FastAPI.
+>
 > 面向电商售前导购场景的 Agent 平台：**模糊需求 → 多轮槽位补全 → BM25 + BGE 双路召回 → RRF 融合 → 特征/CrossEncoder 重排 → MCP 库存校验 → SSE 流式回答**。
 
 用户说一句「5000 以内拍照好一点的手机」，系统要能把这句话拆成结构化条件、在 5 万条 SKU 里召回候选、融合两路结果、按预算与需求重排、调工具确认真实库存，最后流式输出带商品卡片的推荐——这个仓库就是这套链路的完整实现，可以直接跑起来。

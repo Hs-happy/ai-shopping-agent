@@ -55,6 +55,7 @@ class MCPClient:
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 0
         self._write_lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
         self._started = False
 
     @property
@@ -64,36 +65,65 @@ class MCPClient:
     async def start(self) -> None:
         if self.alive:
             return
-        env = os.environ.copy()
-        env["SHOP_DB"] = str(self.db_path)
-        env["MCP_FAKE_LATENCY_MS"] = str(self.fake_latency_ms)
-        self._proc = await asyncio.create_subprocess_exec(
-            self.python, "-m", self.module,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            cwd=str(BASE_DIR),
-            env=env,
-        )
-        self._reader_task = asyncio.create_task(self._read_loop())
-        await self._request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"roots": {"listChanged": False}},
-            "clientInfo": {"name": "shopping-agent", "version": "0.1.0"},
-        }, timeout=8.0)
-        await self._notify("notifications/initialized", {})
-        self._started = True
-        logger.info("MCP server 已连接 (pid=%s)", self._proc.pid if self._proc else "-")
+        # 并发请求可能同时触发启动，必须串行化，否则会起出两个进程、读循环互相抢 stdout
+        async with self._start_lock:
+            if self.alive:
+                return
+            env = os.environ.copy()
+            env["SHOP_DB"] = str(self.db_path)
+            env["MCP_FAKE_LATENCY_MS"] = str(self.fake_latency_ms)
+            self._proc = await asyncio.create_subprocess_exec(
+                self.python, "-m", self.module,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=str(BASE_DIR),
+                env=env,
+            )
+            self._reader_task = asyncio.create_task(self._read_loop())
+            try:
+                await self._request("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"roots": {"listChanged": False}},
+                    "clientInfo": {"name": "shopping-agent", "version": "0.1.0"},
+                }, timeout=8.0)
+                await self._notify("notifications/initialized", {})
+            except Exception:
+                await self._stop_process()
+                raise
+            self._started = True
+            logger.info("MCP server 已连接 (pid=%s)", self._proc.pid if self._proc else "-")
+
+    async def _stop_process(self) -> None:
+        self._started = False
+        if self._reader_task:
+            self._reader_task.cancel()
+            self._reader_task = None
+        if self._proc and self._proc.returncode is None:
+            try:
+                self._proc.terminate()
+                await asyncio.wait_for(self._proc.wait(), timeout=2)
+            except Exception:  # noqa: BLE001
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._proc = None
 
     async def _notify(self, method: str, params: dict[str, Any]) -> None:
         await self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     async def _send(self, payload: dict[str, Any]) -> None:
-        if not self._proc or not self._proc.stdin:
-            raise MCPError("MCP 进程未启动")
+        if not self._proc or self._proc.stdin is None or self._proc.returncode is not None:
+            self._started = False
+            raise MCPError("MCP 进程不可用")
         async with self._write_lock:
-            self._proc.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
-            await self._proc.stdin.drain()
+            try:
+                self._proc.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                await self._proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, AttributeError, RuntimeError) as exc:
+                self._started = False
+                raise MCPError(f"MCP 写入失败: {exc}") from exc
 
     async def _read_loop(self) -> None:
         assert self._proc and self._proc.stdout
@@ -118,6 +148,7 @@ class MCPClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning("MCP 读循环退出: %s", exc)
         finally:
+            self._started = False
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(MCPError("MCP 连接已断开"))
@@ -148,19 +179,7 @@ class MCPClient:
         return json.loads(text)
 
     async def close(self) -> None:
-        self._started = False
-        if self._reader_task:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        if self._proc and self._proc.returncode is None:
-            try:
-                self._proc.terminate()
-                await asyncio.wait_for(self._proc.wait(), timeout=2)
-            except Exception:  # noqa: BLE001
-                self._proc.kill()
+        await self._stop_process()
 
 
 @dataclass

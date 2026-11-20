@@ -1,0 +1,50 @@
+# 启用方式：把本文件复制到 .github/workflows/ci.yml（GitHub 网页端新建文件也可）。
+# 注意：通过 API/CLI 推送改动了 workflow 文件的提交，需要带 workflow scope 的 token；
+# 没有的话就在网页上手动添加，Actions 会自动开始跑。
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 造数并清洗（小规模，验证管道）
+        run: |
+          python -m app.data.generator --count 4000
+          python -m app.data.etl
+
+      - name: 构建检索索引
+        run: python scripts/build_index.py
+
+      - name: 检索评测
+        run: python -m app.eval.runner --k 10
+
+      - name: 单元测试与链路测试
+        run: python -m pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 compose 配置
+        run: docker compose config
+      - name: 构建镜像
+        run: docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple -t shopping-agent:ci .
