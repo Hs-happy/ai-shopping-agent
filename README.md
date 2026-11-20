@@ -214,6 +214,14 @@ python -m pytest -q      # 28 passed
 
 覆盖：分词/价格解析、槽位抽取与多轮合并、RRF 排序性质、预算与品牌硬过滤、MCP 往返、库存降级、Agent 全链路事件、闲聊与售后短路，以及用 `httpx.MockTransport` 验证的 OpenAI 兼容协议层（JSON 模式 / Function Calling / 流式）。
 
+运维小工具：
+
+```bash
+python scripts/tool_stats.py          # MCP 工具成功率 / 平均耗时 / 最近失败原因
+python scripts/tool_stats.py --clear  # 演示前重置统计
+python scripts/build_index.py --rebuild
+```
+
 ## 已知局限
 
 - **默认向量后端**：本机装了 `fastembed`，用的是 `BAAI/bge-small-zh-v1.5`（512 维）；没装则自动退回零依赖的 hashing embedding，语义能力有限但链路完整。
