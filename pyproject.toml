@@ -1,0 +1,19 @@
+[project]
+name = "ai-shopping-agent"
+version = "0.1.0"
+description = "全渠道智能导购 Agent 平台：LangGraph 多轮对话 + BM25/BGE 混合检索 + MCP 工具编排 + SSE 流式回答"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

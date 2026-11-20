@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    container_name: shopping-agent
+    ports:
+      - "8771:8771"
+    env_file:
+      - .env
+    environment:
+      EMBEDDING_MODE: hashing
+      HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8771/api/chat/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
