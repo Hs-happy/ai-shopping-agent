@@ -1,4 +1,9 @@
-FROM python:3.12-slim
+# 基础镜像与 pip 源都做成 ARG，方便在受限网络下换成镜像站：
+#   docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim .
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -9,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN pip install -i ${PIP_INDEX_URL} -r requirements.txt
 
 COPY app ./app
 COPY web ./web

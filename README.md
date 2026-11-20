@@ -150,6 +150,19 @@ meta → slots → intent → retrieval → [rewrite] → tool_call → tool_res
 
 > 延迟是检索链路本身（BM25 + 向量 + RRF + 重排，不含 LLM 生成），本机 CPU。
 
+### 重排：特征 vs CrossEncoder
+
+`python scripts/eval_rerank.py --queries 16`（同一批查询，只换重排器）：
+
+| 重排器 | Recall@10 | nDCG@10 | MRR@10 | 单次延迟 |
+|---|---|---|---|---|
+| 特征重排（默认） | 0.856 | 0.877 | 0.938 | 12 ms |
+| BGE CrossEncoder（bge-reranker-base） | **0.919** | **0.941** | **1.000** | 1434 ms |
+
+结论很实际：CrossEncoder 用 **100 倍延迟换 6 个点召回**，所以默认关着，`RERANK_MODE=cross_encoder` 才启用；线上更合理的做法是按流量采样、或只对打分边界附近的候选做二次重排。
+
+另一个踩过的坑：CE 的输入必须带价格和核心参数。只喂"标题 + 标签"时它分不清"5000 以内"和"6000 起"，nDCG 反而从 0.877 掉到 0.842；把价格、规格拼进 passage 之后才变成上表的 0.941。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
@@ -169,13 +182,35 @@ curl -N -X POST http://127.0.0.1:8771/api/chat/stream \
   -d '{"query":"5000以内拍照好的手机","session_id":"demo"}'
 ```
 
+## 部署
+
+```bash
+docker compose up -d --build
+# 或
+docker build -t shopping-agent .
+docker run -p 8771:8771 -v ./data:/app/data shopping-agent
+```
+
+镜像首次启动会自动造数（5 万条，约 15s）、清洗、建索引（hashing 向量约 25s），`data/` 挂卷后第二次启动直接读缓存。
+
+**网络受限时**：基础镜像与 pip 源都做成了构建参数，换成可达的镜像站即可——
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  -t shopping-agent .
+```
+
+（本机验证时 `docker compose config` 通过、Dockerfile 解析通过，但 Docker Hub 的 blob 请求被网络拦截返回 HTML，镜像未能实际构建完成——这是网络问题，不是文件问题。）
+
 ## 测试
 
 ```bash
-python -m pytest -q      # 25 passed
+python -m pytest -q      # 28 passed
 ```
 
-覆盖：分词/价格解析、槽位抽取与多轮合并、RRF 排序性质、预算与品牌硬过滤、MCP 往返、库存降级、Agent 全链路事件、闲聊与售后短路。
+覆盖：分词/价格解析、槽位抽取与多轮合并、RRF 排序性质、预算与品牌硬过滤、MCP 往返、库存降级、Agent 全链路事件、闲聊与售后短路，以及用 `httpx.MockTransport` 验证的 OpenAI 兼容协议层（JSON 模式 / Function Calling / 流式）。
 
 ## 已知局限
 
